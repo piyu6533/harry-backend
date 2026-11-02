@@ -1,13 +1,19 @@
 import asyncio
 import json
+import logging
+from typing import Dict, Any
 import httpx
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse, HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 import uvicorn
 
-app = FastAPI(title="harry-nifty Backend")
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("harry-backend")
 
+app = FastAPI(title="harry-nifty Backend Terminal Bridge")
+
+# Cross-Origin Resource Sharing (CORS) setup for GitHub Pages frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -16,46 +22,58 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-API_KEY = "b29e5048f9ab47bc9ff6a33f4d1fceb9"
-API_SECRET = "17fce6cce6ca45548ba54db681d8846c"
-ACCESS_TOKEN = ""
+# Active Paytm Money API Credentials
+API_KEY: str = "b29e5048f9ab47bc9ff6a33f4d1fceb9"
+API_SECRET: str = "17fce6cce6ca45548ba54db681d8846c"
 
-clients = set()
+# In-memory session store
+ACCESS_TOKEN: str = ""
 
-live_market_cache = {
-    "NIFTY": {"ltp": 24380.40, "vwap": 24320.00, "pcr": 1.24},
-    "BANKNIFTY": {"ltp": 51840.10, "vwap": 51950.00, "pcr": 0.86},
-    "SENSEX": {"ltp": 80120.50, "vwap": 79950.00, "pcr": 1.30},
-    "FINNIFTY": {"ltp": 23910.80, "vwap": 23890.00, "pcr": 1.08},
-    "RELIANCE": {"ltp": 2890.50, "vwap": 2872.00, "pcr": 1.31},
-    "HDFCBANK": {"ltp": 1682.20, "vwap": 1690.00, "pcr": 0.82}
+# Live Market State Cache
+live_market_cache: Dict[str, Dict[str, Any]] = {
+    "NIFTY": {"ltp": 24380.40, "vwap": 24320.00, "pcr": 1.24, "rsi": 64.5},
+    "BANKNIFTY": {"ltp": 51840.10, "vwap": 51950.00, "pcr": 0.86, "rsi": 58.2},
+    "SENSEX": {"ltp": 80120.50, "vwap": 79950.00, "pcr": 1.30, "rsi": 61.0},
+    "FINNIFTY": {"ltp": 23910.80, "vwap": 23890.00, "pcr": 1.08, "rsi": 55.4},
+    "RELIANCE": {"ltp": 2890.50, "vwap": 2872.00, "pcr": 1.31, "rsi": 62.1},
+    "HDFCBANK": {"ltp": 1682.20, "vwap": 1690.00, "pcr": 0.82, "rsi": 49.8}
 }
+
+connected_websockets = set()
+
 
 @app.get("/")
 def root():
     return {
         "status": "online",
+        "service": "harry-nifty-backend",
         "access_token_active": bool(ACCESS_TOKEN),
-        "feed_mode": "REAL_PAYTM_STREAM" if ACCESS_TOKEN else "WAITING_TOKEN"
+        "feed_mode": "REAL_PAYTM_STREAM" if ACCESS_TOKEN else "WAITING_AUTH"
     }
 
-# ૧. સીધા ૧-ક્લિક લૉગિન માટે
+
 @app.get("/login")
 def login_redirect():
+    """Redirects directly to Paytm Money authentication gateway."""
     login_url = f"https://login.paytmmoney.com/merchant-login?apiKey={API_KEY}"
     return RedirectResponse(login_url)
 
-# ૨. પેટીએમ અહીં પાછું આવીને ઓટોમેટિક Access Token બનાવશે
+
 @app.get("/callback")
-async def paytm_callback(requestToken: str = ""):
+async def paytm_callback(requestToken: str = Query(None)):
+    """Receives requestToken from Paytm redirect and exchanges for JWT Access Token."""
     global ACCESS_TOKEN
     if not requestToken:
-        return HTMLResponse("<h3 style='color:red;'>Error: requestToken not received from Paytm</h3>")
-    
-    # Request Token ને Access Token માં બદલો
+        return HTMLResponse(
+            "<h3 style='color:#ef4444;font-family:sans-serif;'>Missing requestToken in callback parameters.</h3>",
+            status_code=400
+        )
+
+    logger.info(f"Received requestToken: {requestToken}. Requesting access token...")
+
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
-            token_res = await client.post(
+            token_response = await client.post(
                 "https://developer.paytmmoney.com/accounts/v2/gettoken",
                 json={
                     "api_key": API_KEY,
@@ -63,67 +81,144 @@ async def paytm_callback(requestToken: str = ""):
                     "request_token": requestToken
                 }
             )
-            data = token_res.json()
-            token = data.get("data", {}).get("access_token") or data.get("access_token")
-            
+            res_data = token_response.json()
+            token = res_data.get("data", {}).get("access_token") or res_data.get("access_token")
+
             if token:
                 ACCESS_TOKEN = token
+                logger.info("Access token acquired and active.")
                 return HTMLResponse("""
-                    <body style="background:#080b11; color:#00dc82; font-family:sans-serif; text-align:center; padding-top:60px;">
-                        <h2 style="font-size:26px;">✅ LIVE FEED ACTIVATED!</h2>
-                        <p style="color:#94a3b8; margin-bottom:25px;">Paytm Money Access Token successfully generated and loaded into backend.</p>
-                        <a href="https://piyu6533.github.io/harry-nifty-app/" style="background:#06b6d4; color:#000; padding:12px 24px; text-decoration:none; font-weight:bold; border-radius:6px; font-size:14px;">Open Trading Terminal</a>
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                        <title>Live Feed Activated</title>
+                        <style>
+                            body {
+                                background-color: #080b11;
+                                color: #f8fafc;
+                                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                                display: flex;
+                                flex-direction: column;
+                                align-items: center;
+                                justify-content: center;
+                                height: 100vh;
+                                margin: 0;
+                                text-align: center;
+                            }
+                            .card {
+                                background: #0f172a;
+                                border: 1px solid #1e293b;
+                                border-radius: 12px;
+                                padding: 32px;
+                                max-width: 420px;
+                                box-shadow: 0 10px 25px -5px rgba(0,0,0,0.5);
+                            }
+                            h2 { color: #10b981; margin-top: 0; }
+                            p { color: #94a3b8; font-size: 14px; line-height: 1.5; }
+                            a {
+                                display: inline-block;
+                                margin-top: 20px;
+                                background-color: #06b6d4;
+                                color: #020617;
+                                font-weight: 700;
+                                padding: 12px 24px;
+                                border-radius: 6px;
+                                text-decoration: none;
+                                transition: opacity 0.2s;
+                            }
+                            a:hover { opacity: 0.9; }
+                        </style>
+                    </head>
+                    <body>
+                        <div class="card">
+                            <h2>&#9989; LIVE FEED ACTIVATED!</h2>
+                            <p>Paytm Money Access Token successfully generated and loaded into the background streamer.</p>
+                            <a href="https://piyu6533.github.io/harry-nifty-app/">Open Trading Terminal</a>
+                        </div>
                     </body>
+                    </html>
                 """)
             else:
-                return HTMLResponse(f"<h3 style='color:red;'>Token Generation Failed: {data}</h3>")
-        except Exception as e:
-            return HTMLResponse(f"<h3 style='color:red;'>Exception: {str(e)}</h3>")
+                logger.error(f"Failed to generate access token: {res_data}")
+                return HTMLResponse(
+                    f"<h3 style='color:#ef4444;font-family:sans-serif;'>Token Generation Failed: {res_data}</h3>",
+                    status_code=400
+                )
+        except Exception as exc:
+            logger.error(f"Error during token exchange: {exc}")
+            return HTMLResponse(
+                f"<h3 style='color:#ef4444;font-family:sans-serif;'>Internal Error: {str(exc)}</h3>",
+                status_code=500
+            )
 
-# મેન્યુઅલ ટોકન સેટ કરવા માટે
+
 @app.get("/set-token")
 def set_token(token: str):
+    """Direct fallback endpoint to set the access token manually."""
     global ACCESS_TOKEN
     ACCESS_TOKEN = token.strip()
     return {"message": "Access Token updated successfully", "status": "LIVE"}
 
-# Real Market Quote Streamer
+
 async def fetch_paytm_live_quotes():
-    headers = {
-        "x-api-key": API_KEY,
-        "x-jwt-token": ACCESS_TOKEN,
-        "Content-Type": "application/json"
+    """Background polling loop that pulls live quotes from Paytm Money and updates the cache."""
+    quote_url = "https://developer.paytmmoney.com/data/v1/quotes/live"
+    params = {
+        "mode": "LTP",
+        "pref": "NSE_INDEX:Nifty 50,NSE_INDEX:Nifty Bank,NSE:RELIANCE-EQ,NSE:HDFCBANK-EQ"
     }
-    async with httpx.AsyncClient(timeout=3.0) as client:
+
+    async with httpx.AsyncClient(timeout=4.0) as client:
         while True:
             if ACCESS_TOKEN:
+                headers = {
+                    "x-jwt-token": ACCESS_TOKEN,
+                    "Content-Type": "application/json"
+                }
                 try:
-                    params = {"pref": "NSE:NIFTY 50,NSE:NIFTY BANK,NSE:RELIANCE,NSE:HDFCBANK"}
-                    response = await client.get(
-                        "https://developer.paytmmoney.com/data/v1/quotes/live",
-                        headers={"x-api-key": API_KEY, "x-jwt-token": ACCESS_TOKEN},
-                        params=params
-                    )
-                    if response.status_code == 200:
-                        res_data = response.json().get("data", [])
-                        for item in res_data:
-                            sym = item.get("symbol")
-                            ltp = item.get("last_price")
-                            if sym in live_market_cache and ltp:
-                                live_market_cache[sym]["ltp"] = float(ltp)
-                                live_market_cache[sym]["vwap"] = float(item.get("avg_price", ltp))
-                except Exception as e:
-                    pass
+                    res = await client.get(quote_url, headers=headers, params=params)
+                    if res.status_code == 200:
+                        data = res.json().get("data", [])
+                        for item in data:
+                            name = str(item.get("security_id") or item.get("symbol") or item.get("trading_symbol") or "")
+                            ltp = item.get("last_traded_price") or item.get("last_price") or item.get("ltp")
+                            vwap = item.get("avg_price") or ltp
+
+                            if ltp is not None:
+                                ltp_f = float(ltp)
+                                vwap_f = float(vwap) if vwap else ltp_f
+
+                                if "Nifty 50" in name or "NIFTY" in name:
+                                    live_market_cache["NIFTY"]["ltp"] = ltp_f
+                                    live_market_cache["NIFTY"]["vwap"] = vwap_f
+                                elif "Bank" in name or "BANKNIFTY" in name:
+                                    live_market_cache["BANKNIFTY"]["ltp"] = ltp_f
+                                    live_market_cache["BANKNIFTY"]["vwap"] = vwap_f
+                                elif "RELIANCE" in name:
+                                    live_market_cache["RELIANCE"]["ltp"] = ltp_f
+                                    live_market_cache["RELIANCE"]["vwap"] = vwap_f
+                                elif "HDFCBANK" in name:
+                                    live_market_cache["HDFCBANK"]["ltp"] = ltp_f
+                                    live_market_cache["HDFCBANK"]["vwap"] = vwap_f
+                    else:
+                        logger.warning(f"Paytm API returned status {res.status_code}: {res.text}")
+                except Exception as exc:
+                    logger.error(f"Error fetching live quotes: {exc}")
+
             await asyncio.sleep(1)
+
 
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(fetch_paytm_live_quotes())
 
+
 @app.websocket("/ws/live")
 async def websocket_endpoint(websocket: WebSocket):
+    """Broadcasts tick updates to all active frontend subscribers."""
     await websocket.accept()
-    clients.add(websocket)
+    connected_websockets.add(websocket)
     try:
         while True:
             await websocket.send_text(json.dumps({
@@ -132,7 +227,10 @@ async def websocket_endpoint(websocket: WebSocket):
             }))
             await asyncio.sleep(1)
     except WebSocketDisconnect:
-        clients.remove(websocket)
+        connected_websockets.remove(websocket)
+    except Exception:
+        connected_websockets.discard(websocket)
+
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000)
