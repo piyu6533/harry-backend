@@ -14,7 +14,7 @@ import uvicorn
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("harry-backend")
 
-app = FastAPI(title="harry-nifty Pro Automated Bridge")
+app = FastAPI(title="harry-nifty Live Terminal Engine")
 
 app.add_middleware(
     CORSMiddleware,
@@ -44,16 +44,16 @@ def save_token_to_disk(token: str):
     try:
         with open(TOKEN_FILE, "w") as f:
             json.dump({"public_access_token": token}, f)
-        logger.info("Token saved to disk.")
+        logger.info("Token successfully saved to disk.")
     except Exception as e:
         logger.error(f"Error saving token: {e}")
 
 PUBLIC_ACCESS_TOKEN = load_saved_token()
 
-# Initial Cache
+# Market Cache
 live_market_cache: Dict[str, Dict[str, Any]] = {
-    "NIFTY": {"ltp": 23222.10, "vwap": 23295.00, "high": 23360.00, "low": 23210.00, "close": 23310.00, "pcr": 0.92, "rsi": 41.5},
-    "BANKNIFTY": {"ltp": 51840.10, "vwap": 51950.00, "high": 52100.00, "low": 51720.00, "close": 51890.00, "pcr": 0.86, "rsi": 58.2},
+    "NIFTY": {"ltp": 0.0, "vwap": 0.0, "high": 0.0, "low": 0.0, "close": 0.0, "pcr": 0.92, "rsi": 41.5},
+    "BANKNIFTY": {"ltp": 0.0, "vwap": 0.0, "high": 0.0, "low": 0.0, "close": 0.0, "pcr": 0.86, "rsi": 58.2},
     "SENSEX": {"ltp": 80120.50, "vwap": 79950.00, "high": 80300.00, "low": 79800.00, "close": 80000.00, "pcr": 1.30, "rsi": 61.0},
     "FINNIFTY": {"ltp": 23910.80, "vwap": 23890.00, "high": 24020.00, "low": 23840.00, "close": 23900.00, "pcr": 1.08, "rsi": 55.4},
     "RELIANCE": {"ltp": 1252.50, "vwap": 1258.00, "high": 1265.00, "low": 1240.00, "close": 1255.00, "pcr": 1.31, "rsi": 62.1},
@@ -101,11 +101,11 @@ async def paytm_callback(requestToken: str = Query(None)):
             if pub_token:
                 PUBLIC_ACCESS_TOKEN = pub_token
                 save_token_to_disk(pub_token)
-                logger.info("Public Access Token successfully acquired and saved!")
+                logger.info("Public Access Token acquired!")
                 return HTMLResponse("""
                     <body style="background:#080b11; color:#00dc82; font-family:sans-serif; text-align:center; padding-top:60px;">
-                        <h2>✅ FULLY AUTOMATED FEED ACTIVATED!</h2>
-                        <p style="color:#94a3b8;">Token permanently saved.</p>
+                        <h2>✅ FEED ACTIVATED!</h2>
+                        <p style="color:#94a3b8;">Paytm Market Data Stream is now connected.</p>
                         <a href="https://piyu6533.github.io/harry-nifty-app/" style="background:#06b6d4; color:#000; padding:12px 24px; text-decoration:none; font-weight:bold; border-radius:6px;">Open Trading Terminal</a>
                     </body>
                 """)
@@ -131,18 +131,16 @@ def update_cache_price(security_id: int, price: float, high: float = 0, low: flo
 
     if sym_key:
         live_market_cache[sym_key]["ltp"] = price_val
-        
-        # Keep real high/low/close bounds
         if high > 0: live_market_cache[sym_key]["high"] = round(float(high), 2)
         if low > 0: live_market_cache[sym_key]["low"] = round(float(low), 2)
         if close > 0: live_market_cache[sym_key]["close"] = round(float(close), 2)
         
-        # True Typical Price VWAP
-        cur_h = live_market_cache[sym_key].get("high", price_val)
-        cur_l = live_market_cache[sym_key].get("low", price_val)
-        cur_c = live_market_cache[sym_key].get("close", price_val)
+        cur_h = live_market_cache[sym_key].get("high") or price_val
+        cur_l = live_market_cache[sym_key].get("low") or price_val
+        cur_c = live_market_cache[sym_key].get("close") or price_val
         if cur_h > cur_l:
             live_market_cache[sym_key]["vwap"] = round((cur_h + cur_l + cur_c) / 3.0, 2)
+        logger.info(f"⚡ [{sym_key}] Real-Time LTP: {price_val}")
 
 def parse_paytm_binary_packet(data: bytes):
     length = len(data)
@@ -188,6 +186,30 @@ def parse_paytm_binary_packet(data: bytes):
         except Exception:
             break
 
+async def fallback_quote_poller():
+    """Polls accurate index quote directly if live websocket has not fed ticks yet."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Accept": "*/*"
+    }
+    while True:
+        try:
+            # If NIFTY is not populated from Paytm WS, fetch live index value
+            if live_market_cache["NIFTY"]["ltp"] == 0.0 or not PUBLIC_ACCESS_TOKEN:
+                async with httpx.AsyncClient(timeout=4.0, headers=headers) as client:
+                    resp = await client.get("https://query1.finance.yahoo.com/v8/finance/chart/%5ENSEI?interval=1m")
+                    if resp.status_code == 200:
+                        meta = resp.json()["chart"]["result"][0]["meta"]
+                        cur_p = round(float(meta.get("regularMarketPrice", 0.0)), 2)
+                        day_h = round(float(meta.get("regularMarketDayHigh", cur_p)), 2)
+                        day_l = round(float(meta.get("regularMarketDayLow", cur_p)), 2)
+                        prev_c = round(float(meta.get("previousClose", cur_p)), 2)
+                        if cur_p > 0:
+                            update_cache_price(13, cur_p, day_h, day_l, prev_c)
+        except Exception:
+            pass
+        await asyncio.sleep(2)
+
 async def paytm_websocket_client():
     while True:
         token = PUBLIC_ACCESS_TOKEN or load_saved_token()
@@ -203,18 +225,19 @@ async def paytm_websocket_client():
                         {"actionType": "ADD", "modeType": "LTP", "scripType": "EQUITY", "exchangeType": "NSE", "scripId": "1333"}
                     ]
                     await ws.send(json.dumps(subscription_packet))
-                    logger.info("Active subscription running!")
+                    logger.info("Subscribed to Paytm instruments")
                     while True:
                         msg = await ws.recv()
                         if isinstance(msg, bytes):
                             parse_paytm_binary_packet(msg)
             except Exception as exc:
-                logger.warning(f"Paytm WS reconnecting: {exc}")
+                logger.warning(f"Paytm WS disconnected: {exc}")
         await asyncio.sleep(3)
 
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(paytm_websocket_client())
+    asyncio.create_task(fallback_quote_poller())
 
 @app.websocket("/ws/live")
 async def websocket_endpoint(websocket: WebSocket):
@@ -228,7 +251,7 @@ async def websocket_endpoint(websocket: WebSocket):
             }))
             await asyncio.sleep(1)
     except WebSocketDisconnect:
-        connected_websockets.discard(websocket)
+        connected_websockets.remove(websocket)
     except Exception:
         connected_websockets.discard(websocket)
 
