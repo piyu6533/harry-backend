@@ -50,13 +50,14 @@ def save_token_to_disk(token: str):
 
 PUBLIC_ACCESS_TOKEN = load_saved_token()
 
+# Initial Cache
 live_market_cache: Dict[str, Dict[str, Any]] = {
-    "NIFTY": {"ltp": 23223.90, "vwap": 23310.00, "high": 23350.00, "low": 23150.00, "close": 23200.00, "pcr": 0.92, "rsi": 42.5},
+    "NIFTY": {"ltp": 23222.10, "vwap": 23295.00, "high": 23360.00, "low": 23210.00, "close": 23310.00, "pcr": 0.92, "rsi": 41.5},
     "BANKNIFTY": {"ltp": 51840.10, "vwap": 51950.00, "high": 52100.00, "low": 51720.00, "close": 51890.00, "pcr": 0.86, "rsi": 58.2},
     "SENSEX": {"ltp": 80120.50, "vwap": 79950.00, "high": 80300.00, "low": 79800.00, "close": 80000.00, "pcr": 1.30, "rsi": 61.0},
     "FINNIFTY": {"ltp": 23910.80, "vwap": 23890.00, "high": 24020.00, "low": 23840.00, "close": 23900.00, "pcr": 1.08, "rsi": 55.4},
-    "RELIANCE": {"ltp": 1250.60, "vwap": 1255.00, "high": 1265.00, "low": 1240.00, "close": 1252.00, "pcr": 1.31, "rsi": 62.1},
-    "HDFCBANK": {"ltp": 689.45, "vwap": 692.00, "high": 695.00, "low": 680.00, "close": 688.00, "pcr": 0.82, "rsi": 49.8}
+    "RELIANCE": {"ltp": 1252.50, "vwap": 1258.00, "high": 1265.00, "low": 1240.00, "close": 1255.00, "pcr": 1.31, "rsi": 62.1},
+    "HDFCBANK": {"ltp": 689.20, "vwap": 693.00, "high": 695.00, "low": 680.00, "close": 690.00, "pcr": 0.82, "rsi": 49.8}
 }
 
 connected_websockets = set()
@@ -104,7 +105,7 @@ async def paytm_callback(requestToken: str = Query(None)):
                 return HTMLResponse("""
                     <body style="background:#080b11; color:#00dc82; font-family:sans-serif; text-align:center; padding-top:60px;">
                         <h2>✅ FULLY AUTOMATED FEED ACTIVATED!</h2>
-                        <p style="color:#94a3b8;">Token permanently saved. System is live.</p>
+                        <p style="color:#94a3b8;">Token permanently saved.</p>
                         <a href="https://piyu6533.github.io/harry-nifty-app/" style="background:#06b6d4; color:#000; padding:12px 24px; text-decoration:none; font-weight:bold; border-radius:6px;">Open Trading Terminal</a>
                     </body>
                 """)
@@ -131,15 +132,17 @@ def update_cache_price(security_id: int, price: float, high: float = 0, low: flo
     if sym_key:
         live_market_cache[sym_key]["ltp"] = price_val
         
-        # Real high, low, close update
+        # Keep real high/low/close bounds
         if high > 0: live_market_cache[sym_key]["high"] = round(float(high), 2)
         if low > 0: live_market_cache[sym_key]["low"] = round(float(low), 2)
         if close > 0: live_market_cache[sym_key]["close"] = round(float(close), 2)
         
-        # VWAP fix: Do not overwrite VWAP directly with LTP
-        prev_vwap = live_market_cache[sym_key].get("vwap", price_val)
-        if close > 0 and (high > low):
-            live_market_cache[sym_key]["vwap"] = round((high + low + close) / 3, 2)
+        # True Typical Price VWAP
+        cur_h = live_market_cache[sym_key].get("high", price_val)
+        cur_l = live_market_cache[sym_key].get("low", price_val)
+        cur_c = live_market_cache[sym_key].get("close", price_val)
+        if cur_h > cur_l:
+            live_market_cache[sym_key]["vwap"] = round((cur_h + cur_l + cur_c) / 3.0, 2)
 
 def parse_paytm_binary_packet(data: bytes):
     length = len(data)
@@ -191,8 +194,8 @@ async def paytm_websocket_client():
         if token:
             ws_url = f"wss://developer-ws.paytmmoney.com/broadcast/user/v1/data?x_jwt_token={token}"
             try:
-                logger.info("Connecting to Paytm Live Streamer...")
-                async with websockets.connect(ws_url, ping_interval=25, ping_timeout=25) as ws:
+                logger.info("Opening WebSocket connection to Paytm Live Streamer...")
+                async with websockets.connect(ws_url, ping_interval=20, ping_timeout=20) as ws:
                     subscription_packet = [
                         {"actionType": "ADD", "modeType": "FULL", "scripType": "INDEX", "exchangeType": "NSE", "scripId": "13"},
                         {"actionType": "ADD", "modeType": "FULL", "scripType": "INDEX", "exchangeType": "NSE", "scripId": "25"},
@@ -207,7 +210,7 @@ async def paytm_websocket_client():
                             parse_paytm_binary_packet(msg)
             except Exception as exc:
                 logger.warning(f"Paytm WS reconnecting: {exc}")
-        await asyncio.sleep(4)
+        await asyncio.sleep(3)
 
 @app.on_event("startup")
 async def startup_event():
@@ -225,7 +228,7 @@ async def websocket_endpoint(websocket: WebSocket):
             }))
             await asyncio.sleep(1)
     except WebSocketDisconnect:
-        connected_websockets.remove(websocket)
+        connected_websockets.discard(websocket)
     except Exception:
         connected_websockets.discard(websocket)
 
