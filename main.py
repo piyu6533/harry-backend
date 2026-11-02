@@ -16,8 +16,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-API_KEY = "c43893b664864a618a754e190f6fd922"
-API_SECRET = "ed00240b305d4ecfb28cd911bcdaf7cb"
+API_KEY = "b29e5048f9ab47bc9ff6a33f4d1fceb9"
+API_SECRET = "17fce6cce6ca45548ba54db681d8846c"
 ACCESS_TOKEN = ""
 
 clients = set()
