@@ -3,18 +3,18 @@ import json
 import logging
 import os
 import struct
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import httpx
 import websockets
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 import uvicorn
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("harry-backend")
 
-app = FastAPI(title="harry-nifty Futures & Chain Engine")
+app = FastAPI(title="harry-nifty Pro Automated Bridge")
 
 app.add_middleware(
     CORSMiddleware,
@@ -44,18 +44,15 @@ def save_token_to_disk(token: str):
     try:
         with open(TOKEN_FILE, "w") as f:
             json.dump({"public_access_token": token}, f)
-        logger.info("Token successfully saved to disk.")
+        logger.info("Token saved to disk.")
     except Exception as e:
         logger.error(f"Error saving token: {e}")
 
 PUBLIC_ACCESS_TOKEN = load_saved_token()
 
 live_market_cache: Dict[str, Dict[str, Any]] = {
-    "NIFTY_FUT": {"ltp": 23265.50, "vwap": 23320.00, "high": 23390.00, "low": 23240.00, "close": 23330.00},
     "NIFTY": {"ltp": 23226.45, "vwap": 23295.00, "high": 23360.00, "low": 23210.00, "close": 23310.00, "pcr": 0.92},
     "BANKNIFTY": {"ltp": 54633.05, "vwap": 54720.00, "high": 54850.00, "low": 54550.00, "close": 54700.00, "pcr": 0.86},
-    "SENSEX": {"ltp": 80120.50, "vwap": 79950.00, "high": 80300.00, "low": 79800.00, "close": 80000.00, "pcr": 1.30},
-    "FINNIFTY": {"ltp": 23910.80, "vwap": 23890.00, "high": 24020.00, "low": 23840.00, "close": 23900.00, "pcr": 1.08},
     "RELIANCE": {"ltp": 1252.60, "vwap": 1258.00, "high": 1265.00, "low": 1240.00, "close": 1255.00, "pcr": 1.31},
     "HDFCBANK": {"ltp": 689.45, "vwap": 693.00, "high": 695.00, "low": 680.00, "close": 690.00, "pcr": 0.82}
 }
@@ -82,7 +79,6 @@ async def paytm_callback(requestToken: str = Query(None)):
     if not requestToken:
         return HTMLResponse("<h3 style='color:red;'>Missing requestToken</h3>", status_code=400)
 
-    logger.info(f"Callback received requestToken: {requestToken}")
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
             token_response = await client.post(
@@ -101,11 +97,9 @@ async def paytm_callback(requestToken: str = Query(None)):
             if pub_token:
                 PUBLIC_ACCESS_TOKEN = pub_token
                 save_token_to_disk(pub_token)
-                logger.info("Token saved.")
                 return HTMLResponse("""
                     <body style="background:#080b11; color:#00dc82; font-family:sans-serif; text-align:center; padding-top:60px;">
-                        <h2>✅ FUTURES & OPTION CHAIN FEED ACTIVATED!</h2>
-                        <p style="color:#94a3b8;">Data connected successfully.</p>
+                        <h2>✅ DIRECT PAYTM LIVE OPTION FEED ACTIVATED!</h2>
                         <a href="https://piyu6533.github.io/harry-nifty-app/" style="background:#06b6d4; color:#000; padding:12px 24px; text-decoration:none; font-weight:bold; border-radius:6px;">Open Terminal</a>
                     </body>
                 """)
@@ -114,35 +108,46 @@ async def paytm_callback(requestToken: str = Query(None)):
         except Exception as exc:
             return HTMLResponse(f"<h3 style='color:red;'>Exception: {exc}</h3>", status_code=500)
 
+# PAYTM OFFICIAL REAL-TIME OPTION CHAIN BRIDGE
+@app.get("/api/option-chain")
+async def get_paytm_option_chain(symbol: str = "NIFTY", expiry: str = "03-11-2026"):
+    token = PUBLIC_ACCESS_TOKEN or load_saved_token()
+    if not token:
+        return JSONResponse({"error": "Paytm Token inactive. Please login."}, status_code=401)
+
+    headers = {"x-jwt-token": token, "Accept": "application/json"}
+    url = f"https://developer.paytmmoney.com/fno/v1/option-chain?type=ALL&symbol={symbol}&expiry={expiry}"
+
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.get(url, headers=headers)
+            if resp.status_code == 200:
+                return resp.json()
+            return JSONResponse({"status": "fallback", "code": resp.status_code, "raw": resp.text})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
 def update_cache_price(security_id: int, price: float, high: float = 0, low: float = 0, close: float = 0):
     price_val = round(float(price), 2)
     if price_val <= 0:
         return
 
     sym_key = ""
-    if security_id == 13:
-        sym_key = "NIFTY"
-    elif security_id == 104:
-        sym_key = "NIFTY_FUT"
-    elif security_id == 25:
-        sym_key = "BANKNIFTY"
-    elif security_id == 2885:
-        sym_key = "RELIANCE"
-    elif security_id == 1333:
-        sym_key = "HDFCBANK"
+    if security_id == 13: sym_key = "NIFTY"
+    elif security_id == 25: sym_key = "BANKNIFTY"
+    elif security_id == 2885: sym_key = "RELIANCE"
+    elif security_id == 1333: sym_key = "HDFCBANK"
 
     if sym_key:
         live_market_cache[sym_key]["ltp"] = price_val
         if high > 0: live_market_cache[sym_key]["high"] = round(float(high), 2)
         if low > 0: live_market_cache[sym_key]["low"] = round(float(low), 2)
         if close > 0: live_market_cache[sym_key]["close"] = round(float(close), 2)
-        
-        cur_h = live_market_cache[sym_key].get("high") or price_val
-        cur_l = live_market_cache[sym_key].get("low") or price_val
-        cur_c = live_market_cache[sym_key].get("close") or price_val
+        cur_h = live_market_cache[sym_key].get("high", price_val)
+        cur_l = live_market_cache[sym_key].get("low", price_val)
+        cur_c = live_market_cache[sym_key].get("close", price_val)
         if cur_h > cur_l:
             live_market_cache[sym_key]["vwap"] = round((cur_h + cur_l + cur_c) / 3.0, 2)
-        logger.info(f"⚡ [{sym_key}] Real-Time LTP: {price_val}")
 
 def parse_paytm_binary_packet(data: bytes):
     length = len(data)
@@ -151,26 +156,18 @@ def parse_paytm_binary_packet(data: bytes):
         packet_type = data[pos]
         pos += 1
         try:
-            if packet_type == 64 or packet_type == 61:
+            if packet_type in (64, 61):
                 last_price = struct.unpack_from('<f', data, pos)[0]
                 security_id = struct.unpack_from('<i', data, pos + 8)[0]
                 pos += 22
                 update_cache_price(security_id, last_price)
-            elif packet_type == 65:
+            elif packet_type in (65, 66):
                 last_price = struct.unpack_from('<f', data, pos)[0]
                 security_id = struct.unpack_from('<i', data, pos + 4)[0]
                 c = struct.unpack_from('<f', data, pos + 14)[0]
                 h = struct.unpack_from('<f', data, pos + 18)[0]
                 l = struct.unpack_from('<f', data, pos + 22)[0]
-                pos += 42
-                update_cache_price(security_id, last_price, h, l, c)
-            elif packet_type == 66:
-                last_price = struct.unpack_from('<f', data, pos)[0]
-                security_id = struct.unpack_from('<i', data, pos + 4)[0]
-                c = struct.unpack_from('<f', data, pos + 14)[0]
-                h = struct.unpack_from('<f', data, pos + 18)[0]
-                l = struct.unpack_from('<f', data, pos + 22)[0]
-                pos += 38
+                pos += (42 if packet_type == 65 else 38)
                 update_cache_price(security_id, last_price, h, l, c)
             elif packet_type == 62:
                 last_price = struct.unpack_from('<f', data, pos)[0]
@@ -194,17 +191,14 @@ async def paytm_websocket_client():
         if token:
             ws_url = f"wss://developer-ws.paytmmoney.com/broadcast/user/v1/data?x_jwt_token={token}"
             try:
-                logger.info("Opening WebSocket connection to Paytm Live Streamer...")
                 async with websockets.connect(ws_url, ping_interval=20, ping_timeout=20) as ws:
                     subscription_packet = [
                         {"actionType": "ADD", "modeType": "FULL", "scripType": "INDEX", "exchangeType": "NSE", "scripId": "13"},
-                        {"actionType": "ADD", "modeType": "FULL", "scripType": "FUTURES", "exchangeType": "NSE", "scripId": "104"},
                         {"actionType": "ADD", "modeType": "FULL", "scripType": "INDEX", "exchangeType": "NSE", "scripId": "25"},
                         {"actionType": "ADD", "modeType": "LTP", "scripType": "EQUITY", "exchangeType": "NSE", "scripId": "2885"},
                         {"actionType": "ADD", "modeType": "LTP", "scripType": "EQUITY", "exchangeType": "NSE", "scripId": "1333"}
                     ]
                     await ws.send(json.dumps(subscription_packet))
-                    logger.info("Active subscription running!")
                     while True:
                         msg = await ws.recv()
                         if isinstance(msg, bytes):
