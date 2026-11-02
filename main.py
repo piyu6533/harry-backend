@@ -162,11 +162,14 @@ def set_token(token: str):
 
 
 async def fetch_paytm_live_quotes():
-    """Background polling loop that pulls live quotes from Paytm Money and updates the cache."""
+    """Background polling loop using Paytm Money's exact numeric security IDs."""
     quote_url = "https://developer.paytmmoney.com/data/v1/quotes/live"
+    
+    # Official Paytm Money Security IDs:
+    # 13 = NIFTY 50, 25 = BANKNIFTY, 2885 = RELIANCE, 1333 = HDFCBANK
     params = {
-        "mode": "LTP",
-        "pref": "NSE_INDEX:Nifty 50,NSE_INDEX:Nifty Bank,NSE:RELIANCE-EQ,NSE:HDFCBANK-EQ"
+        "mode": "FULL",
+        "pref": "NSE_INDEX:13:INDEX,NSE_INDEX:25:INDEX,NSE:2885:EQUITY,NSE:1333:EQUITY"
     }
 
     async with httpx.AsyncClient(timeout=4.0) as client:
@@ -181,33 +184,32 @@ async def fetch_paytm_live_quotes():
                     if res.status_code == 200:
                         data = res.json().get("data", [])
                         for item in data:
-                            name = str(item.get("security_id") or item.get("symbol") or item.get("trading_symbol") or "")
-                            ltp = item.get("last_traded_price") or item.get("last_price") or item.get("ltp")
+                            sec_id = str(item.get("security_id", ""))
+                            ltp = item.get("last_price") or item.get("last_traded_price") or item.get("ltp")
                             vwap = item.get("avg_price") or ltp
-
+                            
                             if ltp is not None:
                                 ltp_f = float(ltp)
                                 vwap_f = float(vwap) if vwap else ltp_f
 
-                                if "Nifty 50" in name or "NIFTY" in name:
+                                if sec_id == "13":
                                     live_market_cache["NIFTY"]["ltp"] = ltp_f
                                     live_market_cache["NIFTY"]["vwap"] = vwap_f
-                                elif "Bank" in name or "BANKNIFTY" in name:
+                                elif sec_id == "25":
                                     live_market_cache["BANKNIFTY"]["ltp"] = ltp_f
                                     live_market_cache["BANKNIFTY"]["vwap"] = vwap_f
-                                elif "RELIANCE" in name:
+                                elif sec_id == "2885":
                                     live_market_cache["RELIANCE"]["ltp"] = ltp_f
                                     live_market_cache["RELIANCE"]["vwap"] = vwap_f
-                                elif "HDFCBANK" in name:
+                                elif sec_id == "1333":
                                     live_market_cache["HDFCBANK"]["ltp"] = ltp_f
                                     live_market_cache["HDFCBANK"]["vwap"] = vwap_f
                     else:
-                        logger.warning(f"Paytm API returned status {res.status_code}: {res.text}")
+                        logger.warning(f"Paytm API Error {res.status_code}: {res.text}")
                 except Exception as exc:
                     logger.error(f"Error fetching live quotes: {exc}")
 
             await asyncio.sleep(1)
-
 
 @app.on_event("startup")
 async def startup_event():
