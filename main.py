@@ -50,7 +50,7 @@ def save_token_to_disk(token: str):
 
 PUBLIC_ACCESS_TOKEN = load_saved_token()
 
-# True Market Cache (Updated to real closing levels)
+# True Market Cache (Updated to active index levels)
 live_market_cache: Dict[str, Dict[str, Any]] = {
     "NIFTY": {"ltp": 23440.80, "vwap": 23415.00, "high": 23485.00, "low": 23320.00, "close": 23440.80, "pcr": 0.96},
     "BANKNIFTY": {"ltp": 55002.20, "vwap": 54950.00, "high": 55150.00, "low": 54720.00, "close": 55002.20, "pcr": 0.90},
@@ -134,7 +134,7 @@ async def auto_market_quote_sync():
             pass
         await asyncio.sleep(4)
 
-# PAYTM OFFICIAL OPTION CHAIN BRIDGE
+# PAYTM OFFICIAL OPTION CHAIN BRIDGE (Fix: fetches CALL and PUT concurrently)
 @app.get("/api/option-chain")
 async def get_paytm_option_chain(symbol: str = "NIFTY", expiry: str = "03-11-2026"):
     token = PUBLIC_ACCESS_TOKEN or load_saved_token()
@@ -142,14 +142,50 @@ async def get_paytm_option_chain(symbol: str = "NIFTY", expiry: str = "03-11-202
         return JSONResponse({"status": "no_token", "message": "Using live greeks fallback"}, status_code=200)
 
     headers = {"x-jwt-token": token, "Accept": "application/json"}
-    url = f"https://developer.paytmmoney.com/fno/v1/option-chain?type=ALL&symbol={symbol}&expiry={expiry}"
+    call_url = f"https://developer.paytmmoney.com/fno/v1/option-chain?type=CALL&symbol={symbol}&expiry={expiry}"
+    put_url = f"https://developer.paytmmoney.com/fno/v1/option-chain?type=PUT&symbol={symbol}&expiry={expiry}"
 
     try:
         async with httpx.AsyncClient(timeout=6.0) as client:
-            resp = await client.get(url, headers=headers)
-            if resp.status_code == 200:
-                return resp.json()
-            return JSONResponse({"status": "fallback", "code": resp.status_code})
+            call_resp, put_resp = await asyncio.gather(
+                client.get(call_url, headers=headers),
+                client.get(put_url, headers=headers),
+                return_exceptions=True
+            )
+
+            call_data = call_resp.json().get("data", []) if hasattr(call_resp, "json") and call_resp.status_code == 200 else []
+            put_data = put_resp.json().get("data", []) if hasattr(put_resp, "json") and put_resp.status_code == 200 else []
+
+            # Merge by strike price
+            merged = {}
+            for c in call_data:
+                stk = float(c.get("stk_price", 0))
+                if stk > 0:
+                    merged[stk] = {
+                        "strike_price": stk,
+                        "call_price": c.get("price"),
+                        "call_oi": c.get("oi"),
+                        "put_price": None,
+                        "put_oi": None
+                    }
+
+            for p in put_data:
+                stk = float(p.get("stk_price", 0))
+                if stk > 0:
+                    if stk not in merged:
+                        merged[stk] = {
+                            "strike_price": stk,
+                            "call_price": None,
+                            "call_oi": None,
+                            "put_price": p.get("price"),
+                            "put_oi": p.get("oi")
+                        }
+                    else:
+                        merged[stk]["put_price"] = p.get("price")
+                        merged[stk]["put_oi"] = p.get("oi")
+
+            sorted_chain = sorted(merged.values(), key=lambda x: x["strike_price"])
+            return JSONResponse({"status": "success", "data": sorted_chain})
     except Exception as e:
         return JSONResponse({"status": "error", "error": str(e)})
 
