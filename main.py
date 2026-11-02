@@ -23,13 +23,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Paytm Money Credentials
 API_KEY: str = "b29e5048f9ab47bc9ff6a33f4d1fceb9"
 API_SECRET: str = "17fce6cce6ca45548ba54db681d8846c"
 
 PUBLIC_ACCESS_TOKEN: str = ""
 
-# Live Cache for Terminal
 live_market_cache: Dict[str, Dict[str, Any]] = {
     "NIFTY": {"ltp": 24380.40, "vwap": 24320.00, "pcr": 1.24, "rsi": 64.5},
     "BANKNIFTY": {"ltp": 51840.10, "vwap": 51950.00, "pcr": 0.86, "rsi": 58.2},
@@ -76,19 +74,17 @@ async def paytm_callback(requestToken: str = Query(None)):
                 }
             )
             res_data = token_response.json()
-            
-            # Paytm provides access_token and public_access_token
             pub_token = res_data.get("public_access_token") or res_data.get("data", {}).get("public_access_token")
             if not pub_token:
                 pub_token = res_data.get("access_token") or res_data.get("data", {}).get("access_token")
 
             if pub_token:
                 PUBLIC_ACCESS_TOKEN = pub_token
-                logger.info("Public Access Token successfully acquired! Connecting WebSocket Streamer...")
+                logger.info("Public Access Token successfully acquired! Triggering live stream...")
                 return HTMLResponse("""
                     <body style="background:#080b11; color:#00dc82; font-family:sans-serif; text-align:center; padding-top:60px;">
-                        <h2>✅ LIVE WEBSOCKET FEED ACTIVATED!</h2>
-                        <p style="color:#94a3b8;">Paytm Market Data Streamer is now running.</p>
+                        <h2>✅ LIVE FEED ACTIVATED!</h2>
+                        <p style="color:#94a3b8;">Paytm Market Streamer is now feeding real-time ticks.</p>
                         <a href="https://piyu6533.github.io/harry-nifty-app/" style="background:#06b6d4; color:#000; padding:12px 24px; text-decoration:none; font-weight:bold; border-radius:6px;">Open Trading Terminal</a>
                     </body>
                 """)
@@ -100,63 +96,11 @@ async def paytm_callback(requestToken: str = Query(None)):
             return HTMLResponse(f"<h3 style='color:red;'>Exception: {exc}</h3>", status_code=500)
 
 
-def parse_paytm_binary_packet(data: bytes):
-    """Parses binary byte buffer from Paytm Live Market Data Stream."""
-    length = len(data)
-    pos = 0
-    while pos < length:
-        packet_type = data[pos]
-        pos += 1
-
-        try:
-            # Type 64: INDEX LTP (Size: 22 bytes after type)
-            if packet_type == 64:
-                last_price, last_update_time, security_id, tradable, mode, change_abs, change_pct = struct.unpack_from('<fiIbBff', data, pos)
-                pos += 22
-                update_cache_price(security_id, last_price)
-
-            # Type 65: INDEX QUOTE (Size: 42 bytes)
-            elif packet_type == 65:
-                last_price, security_id, tradable, mode, o, c, h, l, chg_pct, chg_abs, high_52, low_52 = struct.unpack_from('<fIbBffffff', data, pos)
-                pos += 42
-                update_cache_price(security_id, last_price)
-
-            # Type 66: INDEX FULL (Size: 38 bytes)
-            elif packet_type == 66:
-                last_price, security_id, tradable, mode, o, c, h, l, chg_pct, chg_abs, last_time = struct.unpack_from('<fIbBfffffI', data, pos)
-                pos += 38
-                update_cache_price(security_id, last_price)
-
-            # Type 61: EQUITY LTP (Size: 22 bytes)
-            elif packet_type == 61:
-                last_price, last_traded_time, security_id, tradable, mode, change_abs, change_pct = struct.unpack_from('<fiIbBff', data, pos)
-                pos += 22
-                update_cache_price(security_id, last_price)
-
-            # Type 62: EQUITY QUOTE (Size: 66 bytes)
-            elif packet_type == 62:
-                last_price = struct.unpack_from('<f', data, pos)[0]
-                security_id = struct.unpack_from('<I', data, pos + 8)[0]
-                pos += 66
-                update_cache_price(security_id, last_price)
-
-            # Type 63: FULL PACKET (100 bytes depth + 74 bytes data = 174 bytes)
-            elif packet_type == 63:
-                pos += 100  # Skip market depth
-                last_price = struct.unpack_from('<f', data, pos)[0]
-                security_id = struct.unpack_from('<I', data, pos + 8)[0]
-                pos += 74
-                update_cache_price(security_id, last_price)
-            else:
-                # If unknown byte type encountered, safely break out
-                break
-        except Exception as parse_err:
-            logger.debug(f"Parsing error on packet {packet_type}: {parse_err}")
-            break
-
-
 def update_cache_price(security_id: int, price: float):
     price_val = round(float(price), 2)
+    if price_val <= 0:
+        return
+
     if security_id == 13:
         live_market_cache["NIFTY"]["ltp"] = price_val
         live_market_cache["NIFTY"]["vwap"] = price_val
@@ -171,63 +115,93 @@ def update_cache_price(security_id: int, price: float):
         live_market_cache["HDFCBANK"]["ltp"] = price_val
 
 
+def parse_paytm_binary_packet(data: bytes):
+    """Parses binary byte buffer from Paytm Live Market Data Stream."""
+    length = len(data)
+    pos = 0
+    while pos < length:
+        packet_type = data[pos]
+        pos += 1
+
+        try:
+            # 64: INDEX LTP (Packet size: 22 bytes)
+            if packet_type == 64:
+                last_price = struct.unpack_from('<f', data, pos)[0]
+                security_id = struct.unpack_from('<i', data, pos + 8)[0]
+                pos += 22
+                update_cache_price(security_id, last_price)
+
+            # 65: INDEX QUOTE (Packet size: 42 bytes)
+            elif packet_type == 65:
+                last_price = struct.unpack_from('<f', data, pos)[0]
+                security_id = struct.unpack_from('<i', data, pos + 4)[0]
+                pos += 42
+                update_cache_price(security_id, last_price)
+
+            # 66: INDEX FULL (Packet size: 38 bytes)
+            elif packet_type == 66:
+                last_price = struct.unpack_from('<f', data, pos)[0]
+                security_id = struct.unpack_from('<i', data, pos + 4)[0]
+                pos += 38
+                update_cache_price(security_id, last_price)
+
+            # 61: LTP (Packet size: 22 bytes)
+            elif packet_type == 61:
+                last_price = struct.unpack_from('<f', data, pos)[0]
+                security_id = struct.unpack_from('<i', data, pos + 8)[0]
+                pos += 22
+                update_cache_price(security_id, last_price)
+
+            # 62: QUOTE (Packet size: 66 bytes)
+            elif packet_type == 62:
+                last_price = struct.unpack_from('<f', data, pos)[0]
+                security_id = struct.unpack_from('<i', data, pos + 8)[0]
+                pos += 66
+                update_cache_price(security_id, last_price)
+
+            # 63: FULL (100 bytes depth + 74 bytes data = 174 bytes)
+            elif packet_type == 63:
+                pos += 100
+                last_price = struct.unpack_from('<f', data, pos)[0]
+                security_id = struct.unpack_from('<i', data, pos + 8)[0]
+                pos += 74
+                update_cache_price(security_id, last_price)
+            else:
+                break
+        except Exception:
+            break
+
+
 async def paytm_websocket_client():
-    """Persistent background client streaming from Paytm Live Broadcast WS."""
+    """Background client connected to Paytm Live Broadcast."""
     while True:
         if PUBLIC_ACCESS_TOKEN:
             ws_url = f"wss://developer-ws.paytmmoney.com/broadcast/user/v1/data?x_jwt_token={PUBLIC_ACCESS_TOKEN}"
             try:
-                logger.info("Opening WebSocket connection to Paytm Live Streamer...")
-                async with websockets.connect(ws_url, ping_interval=20, ping_timeout=20) as ws:
+                logger.info("Connecting to Paytm Live Streamer...")
+                async with websockets.connect(ws_url, ping_interval=25, ping_timeout=25) as ws:
                     logger.info("Connected to Paytm Live Broadcast API!")
 
-                    # Subscription Preferences
                     subscription_packet = [
-                        {
-                            "actionType": "ADD",
-                            "modeType": "FULL",
-                            "scripType": "INDEX",
-                            "exchangeType": "NSE",
-                            "scripId": "13"
-                        },
-                        {
-                            "actionType": "ADD",
-                            "modeType": "FULL",
-                            "scripType": "INDEX",
-                            "exchangeType": "NSE",
-                            "scripId": "25"
-                        },
-                        {
-                            "actionType": "ADD",
-                            "modeType": "LTP",
-                            "scripType": "EQUITY",
-                            "exchangeType": "NSE",
-                            "scripId": "2885"
-                        },
-                        {
-                            "actionType": "ADD",
-                            "modeType": "LTP",
-                            "scripType": "EQUITY",
-                            "exchangeType": "NSE",
-                            "scripId": "1333"
-                        }
+                        {"actionType": "ADD", "modeType": "LTP", "scripType": "INDEX", "exchangeType": "NSE", "scripId": "13"},
+                        {"actionType": "ADD", "modeType": "LTP", "scripType": "INDEX", "exchangeType": "NSE", "scripId": "25"},
+                        {"actionType": "ADD", "modeType": "LTP", "scripType": "EQUITY", "exchangeType": "NSE", "scripId": "2885"},
+                        {"actionType": "ADD", "modeType": "LTP", "scripType": "EQUITY", "exchangeType": "NSE", "scripId": "1333"}
                     ]
                     await ws.send(json.dumps(subscription_packet))
-                    logger.info("Sent subscription packet for NIFTY, BANKNIFTY, RELIANCE, HDFCBANK")
+                    logger.info("Subscribed to LTP mode for NIFTY, BANKNIFTY, RELIANCE, HDFCBANK")
 
                     while True:
                         msg = await ws.recv()
                         if isinstance(msg, bytes):
                             parse_paytm_binary_packet(msg)
                         else:
-                            logger.info(f"Paytm WS Text: {msg}")
+                            logger.info(f"Paytm WS Msg: {msg}")
 
-            except websockets.exceptions.ConnectionClosed as cc:
-                logger.warning(f"Paytm WS connection closed: {cc}. Reconnecting in 3 seconds...")
             except Exception as exc:
-                logger.error(f"Paytm WS Exception: {exc}. Reconnecting in 3 seconds...")
+                logger.warning(f"Paytm WS disconnected: {exc}. Retrying in 4s...")
 
-        await asyncio.sleep(3)
+        await asyncio.sleep(4)
 
 
 @app.on_event("startup")
@@ -241,6 +215,7 @@ async def websocket_endpoint(websocket: WebSocket):
     connected_websockets.add(websocket)
     try:
         while True:
+            # Broadcast latest cache to frontend
             await websocket.send_text(json.dumps({
                 "type": "TICK_UPDATE",
                 "data": live_market_cache
