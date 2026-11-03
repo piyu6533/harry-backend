@@ -208,6 +208,11 @@ def update_cache_price(security_id: int, price: float, high: float = 0, low: flo
 def parse_paytm_binary_packet(data: bytes):
     length = len(data)
     pos = 0
+        logger.info(
+        "Paytm packet diagnostic: length=%s, first_byte=%s",
+        length,
+        data[0] if data else None
+    )
     while pos < length:
         packet_type = data[pos]
         pos += 1
@@ -239,7 +244,13 @@ def parse_paytm_binary_packet(data: bytes):
             else:
                 break
         except Exception:
-            break
+    logger.exception(
+        "Paytm packet parsing failed: type=%s, position=%s, length=%s",
+        packet_type,
+        pos,
+        length
+    )
+    break
 
 
 async def paytm_websocket_client():
