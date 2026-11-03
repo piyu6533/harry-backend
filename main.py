@@ -241,27 +241,94 @@ def parse_paytm_binary_packet(data: bytes):
         except Exception:
             break
 
+
 async def paytm_websocket_client():
     while True:
         token = PUBLIC_ACCESS_TOKEN or load_saved_token()
-        if token:
-            ws_url = f"wss://developer-ws.paytmmoney.com/broadcast/user/v1/data?x_jwt_token={token}"
-            try:
-                async with websockets.connect(ws_url, ping_interval=20, ping_timeout=20) as ws:
-                    subscription_packet = [
-                        {"actionType": "ADD", "modeType": "FULL", "scripType": "INDEX", "exchangeType": "NSE", "scripId": "13"},
-                        {"actionType": "ADD", "modeType": "FULL", "scripType": "INDEX", "exchangeType": "NSE", "scripId": "25"},
-                        {"actionType": "ADD", "modeType": "LTP", "scripType": "EQUITY", "exchangeType": "NSE", "scripId": "2885"},
-                        {"actionType": "ADD", "modeType": "LTP", "scripType": "EQUITY", "exchangeType": "NSE", "scripId": "1333"}
-                    ]
-                    await ws.send(json.dumps(subscription_packet))
-                    while True:
-                        msg = await ws.recv()
-                        if isinstance(msg, bytes):
-                            parse_paytm_binary_packet(msg)
-            except Exception:
-                pass
-        await asyncio.sleep(4)
+
+        if not token:
+            logger.warning("Paytm token unavailable. Waiting for login.")
+            await asyncio.sleep(10)
+            continue
+
+        ws_url = (
+            "wss://developer-ws.paytmmoney.com/"
+            "broadcast/user/v1/data?x_jwt_token=" + token
+        )
+
+        try:
+            logger.info("Connecting to Paytm WebSocket...")
+
+            async with websockets.connect(
+                ws_url,
+                ping_interval=20,
+                ping_timeout=20
+            ) as ws:
+
+                logger.info("Paytm WebSocket CONNECTED")
+
+                subscription_packet = [
+                    {
+                        "actionType": "ADD",
+                        "modeType": "FULL",
+                        "scripType": "INDEX",
+                        "exchangeType": "NSE",
+                        "scripId": "13"
+                    },
+                    {
+                        "actionType": "ADD",
+                        "modeType": "FULL",
+                        "scripType": "INDEX",
+                        "exchangeType": "NSE",
+                        "scripId": "25"
+                    },
+                    {
+                        "actionType": "ADD",
+                        "modeType": "LTP",
+                        "scripType": "EQUITY",
+                        "exchangeType": "NSE",
+                        "scripId": "2885"
+                    },
+                    {
+                        "actionType": "ADD",
+                        "modeType": "LTP",
+                        "scripType": "EQUITY",
+                        "exchangeType": "NSE",
+                        "scripId": "1333"
+                    }
+                ]
+
+                await ws.send(json.dumps(subscription_packet))
+                logger.info("Paytm subscription request sent.")
+
+                first_packet_logged = False
+
+                while True:
+                    msg = await ws.recv()
+
+                    if isinstance(msg, bytes):
+                        if not first_packet_logged:
+                            logger.info(
+                                "First binary market packet received: %s bytes",
+                                len(msg)
+                            )
+                            first_packet_logged = True
+
+                        parse_paytm_binary_packet(msg)
+
+                    else:
+                        logger.info(
+                            "Paytm non-binary message received: %s",
+                            str(msg)[:150]
+                        )
+
+        except asyncio.CancelledError:
+            raise
+
+        except Exception as exc:
+            logger.exception("Paytm WebSocket connection error: %s", exc)
+
+        await asyncio.sleep(5)
 
 @app.on_event("startup")
 async def startup_event():
