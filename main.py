@@ -25,8 +25,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-API_KEY: str = "b29e5048f9ab47bc9ff6a33f4d1fceb9"
-API_SECRET: str = "17fce6cce6ca45548ba54db681d8846c"
+API_KEY = os.getenv("PAYTM_API_KEY", "").strip()
+API_SECRET = os.getenv("PAYTM_API_SECRET", "").strip()
+
+if not API_KEY or not API_SECRET:
+    logger.warning("Paytm API credentials are not configured.")
 TOKEN_FILE = "token_session.json"
 
 PUBLIC_ACCESS_TOKEN: str = ""
