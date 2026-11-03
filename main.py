@@ -45,13 +45,12 @@ def save_token_to_disk(token: str):
     try:
         with open(TOKEN_FILE, "w") as f:
             json.dump({"public_access_token": token}, f)
-        logger.info("Token successfully saved to disk.")
+        logger.info("Token saved to disk.")
     except Exception as e:
         logger.error(f"Error saving token: {e}")
 
 PUBLIC_ACCESS_TOKEN = load_saved_token()
 
-# Live Market Cache (Currently Streaming 23,591+ Live)
 live_market_cache: Dict[str, Dict[str, Any]] = {
     "NIFTY": {"ltp": 23591.70, "vwap": 23511.43, "high": 23610.70, "low": 23482.80, "close": 23440.80, "pcr": 0.96},
     "BANKNIFTY": {"ltp": 55322.40, "vwap": 55221.08, "high": 55486.95, "low": 55174.10, "close": 55002.20, "pcr": 0.90},
@@ -61,7 +60,6 @@ live_market_cache: Dict[str, Dict[str, Any]] = {
 
 connected_websockets = set()
 
-# Mathematical Black-Scholes Functions
 def normal_cdf(x):
     return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0
 
@@ -124,7 +122,6 @@ async def paytm_callback(requestToken: str = Query(None)):
         except Exception as exc:
             return HTMLResponse(f"<h3 style='color:red;'>Exception: {exc}</h3>", status_code=500)
 
-# LIVE 100% RELIABLE OPTION CHAIN API (Zero 401 Errors)
 @app.get("/api/option-chain")
 async def get_live_option_chain(symbol: str = "NIFTY", expiry: str = "03-Nov-2026"):
     asset = live_market_cache.get(symbol, live_market_cache["NIFTY"])
@@ -132,7 +129,6 @@ async def get_live_option_chain(symbol: str = "NIFTY", expiry: str = "03-Nov-202
     step = 50 if symbol == "NIFTY" else (100 if symbol == "BANKNIFTY" else 20)
     atm = round(spot / step) * step
 
-    # Expiry DTE Resolution
     dte_days = 0.5
     if "09-Nov" in expiry:
         dte_days = 6.5
@@ -140,7 +136,7 @@ async def get_live_option_chain(symbol: str = "NIFTY", expiry: str = "03-Nov-202
         dte_days = 20.5
 
     T = dte_days / 365.0
-    iv = 0.1550 # 15.5% Real-Time NSE Implied Volatility
+    iv = 0.1550
 
     strikes_data = []
     for i in range(-4, 5):
@@ -159,6 +155,30 @@ async def get_live_option_chain(symbol: str = "NIFTY", expiry: str = "03-Nov-202
         })
 
     return JSONResponse({"status": "success", "spot": spot, "atm": atm, "data": strikes_data})
+
+# Continuous Live Poller: Live tick sync ensure karega
+async def live_quote_poller():
+    headers = {"User-Agent": "Mozilla/5.0"}
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=4.0, headers=headers) as client:
+                resp = await client.get("https://query1.finance.yahoo.com/v8/finance/chart/%5ENSEI?interval=1m")
+                if resp.status_code == 200:
+                    meta = resp.json()["chart"]["result"][0]["meta"]
+                    cur_p = round(float(meta.get("regularMarketPrice", 0.0)), 2)
+                    day_h = round(float(meta.get("regularMarketDayHigh", cur_p)), 2)
+                    day_l = round(float(meta.get("regularMarketDayLow", cur_p)), 2)
+                    prev_c = round(float(meta.get("previousClose", cur_p)), 2)
+                    if cur_p > 0:
+                        live_market_cache["NIFTY"]["ltp"] = cur_p
+                        live_market_cache["NIFTY"]["high"] = day_h
+                        live_market_cache["NIFTY"]["low"] = day_l
+                        live_market_cache["NIFTY"]["close"] = prev_c
+                        if day_h > day_l:
+                            live_market_cache["NIFTY"]["vwap"] = round((day_h + day_l + cur_p) / 3.0, 2)
+        except Exception:
+            pass
+        await asyncio.sleep(2)
 
 def update_cache_price(security_id: int, price: float, high: float = 0, low: float = 0, close: float = 0):
     price_val = round(float(price), 2)
@@ -243,6 +263,7 @@ async def paytm_websocket_client():
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(paytm_websocket_client())
+    asyncio.create_task(live_quote_poller())
 
 @app.websocket("/ws/live")
 async def websocket_endpoint(websocket: WebSocket):
