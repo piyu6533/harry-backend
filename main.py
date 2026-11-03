@@ -371,9 +371,6 @@ async def startup_event():
         paytm_websocket_client()
     )
 
-    app.state.yahoo_task = asyncio.create_task(
-        live_quote_poller()
-    )
 
     logger.info("Paytm WebSocket background task created.")
     logger.info("Yahoo poller background task created.")
