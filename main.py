@@ -332,8 +332,23 @@ async def paytm_websocket_client():
 
 @app.on_event("startup")
 async def startup_event():
-    asyncio.create_task(paytm_websocket_client())
-    asyncio.create_task(live_quote_poller())
+    logger.info("APP STARTUP EVENT TRIGGERED")
+
+    logger.info(
+        "Paytm token available at startup: %s",
+        bool(PUBLIC_ACCESS_TOKEN or load_saved_token())
+    )
+
+    app.state.paytm_task = asyncio.create_task(
+        paytm_websocket_client()
+    )
+
+    app.state.yahoo_task = asyncio.create_task(
+        live_quote_poller()
+    )
+
+    logger.info("Paytm WebSocket background task created.")
+    logger.info("Yahoo poller background task created.")
 
 @app.websocket("/ws/live")
 async def websocket_endpoint(websocket: WebSocket):
