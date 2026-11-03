@@ -205,23 +205,32 @@ def update_cache_price(security_id: int, price: float, high: float = 0, low: flo
         if cur_h > cur_l:
             live_market_cache[sym_key]["vwap"] = round((cur_h + cur_l + cur_c) / 3.0, 2)
 
+
 def parse_paytm_binary_packet(data: bytes):
     length = len(data)
     pos = 0
-        logger.info(
+
+    if not data:
+        logger.warning("Paytm received an empty packet.")
+        return
+
+    logger.info(
         "Paytm packet diagnostic: length=%s, first_byte=%s",
         length,
-        data[0] if data else None
+        data[0]
     )
+
     while pos < length:
         packet_type = data[pos]
         pos += 1
+
         try:
             if packet_type in (64, 61):
                 last_price = struct.unpack_from('<f', data, pos)[0]
                 security_id = struct.unpack_from('<i', data, pos + 8)[0]
                 pos += 22
                 update_cache_price(security_id, last_price)
+
             elif packet_type in (65, 66):
                 last_price = struct.unpack_from('<f', data, pos)[0]
                 security_id = struct.unpack_from('<i', data, pos + 4)[0]
@@ -230,27 +239,35 @@ def parse_paytm_binary_packet(data: bytes):
                 l = struct.unpack_from('<f', data, pos + 22)[0]
                 pos += (42 if packet_type == 65 else 38)
                 update_cache_price(security_id, last_price, h, l, c)
+
             elif packet_type == 62:
                 last_price = struct.unpack_from('<f', data, pos)[0]
                 security_id = struct.unpack_from('<i', data, pos + 8)[0]
                 pos += 66
                 update_cache_price(security_id, last_price)
+
             elif packet_type == 63:
                 pos += 100
                 last_price = struct.unpack_from('<f', data, pos)[0]
                 security_id = struct.unpack_from('<i', data, pos + 8)[0]
                 pos += 74
                 update_cache_price(security_id, last_price)
+
             else:
+                logger.warning(
+                    "Unknown Paytm packet type: %s",
+                    packet_type
+                )
                 break
-        except Exception:
-    logger.exception(
-        "Paytm packet parsing failed: type=%s, position=%s, length=%s",
-        packet_type,
-        pos,
-        length
-    )
-    break
+
+        except (struct.error, IndexError, ValueError):
+            logger.exception(
+                "Paytm packet parsing failed: type=%s, position=%s, length=%s",
+                packet_type,
+                pos,
+                length
+            )
+            break
 
 
 async def paytm_websocket_client():
