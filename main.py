@@ -340,6 +340,10 @@ async def paytm_websocket_client():
                                 "First binary market packet received: %s bytes",
                                 len(msg)
                             )
+                            logger.info(
+                                "Paytm raw packet HEX: %s",
+                                message.hex()
+                            )
                             first_packet_logged = True
 
                         parse_paytm_binary_packet(msg)
